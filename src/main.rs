@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::net::TcpListener;
-use tracing::{Level, error, info, instrument, warn};
+use tracing::{Level, error, info};
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser, Debug)]
