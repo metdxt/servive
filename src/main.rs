@@ -1,21 +1,26 @@
 use clap::Parser;
-use http_auth_basic::Credentials;
 use http_body_util::Full;
 use hyper::{
-    Request, Response, StatusCode, body::Bytes, header::AUTHORIZATION, server::conn::http1,
-    service::service_fn,
+    Request, Response, body::Bytes, server::conn::http1, service::service_fn,
 };
+use std::fs;
 use hyper_util::rt::TokioIo;
-use mime_guess::from_path;
 use percent_encoding::percent_decode_str;
 use std::{
-    fs, io,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
 use tokio::net::TcpListener;
-use tracing::{Level, error, info};
+use tracing::{Level, info, error};
 use tracing_subscriber::{EnvFilter, fmt};
+
+mod auth;
+mod responses;
+mod file_handling;
+
+use auth::validate_credentials;
+use responses::not_found_response;
+use file_handling::{validate_path, serve_file, list_directory};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -35,6 +40,10 @@ struct Args {
     /// Password for basic auth (optional)
     #[arg(long)]
     password: Option<String>,
+
+    /// Logging level (error, warn, info, debug, trace)
+    #[arg(short, long, default_value = "info")]
+    log_level: String,
 }
 
 async fn handle_request(
@@ -45,30 +54,11 @@ async fn handle_request(
 ) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
     // Check auth if credentials are provided
     if let (Some(username), Some(password)) = (&username, &password) {
-        if let Some(auth_header) = req.headers().get(AUTHORIZATION) {
-            if let Ok(credentials) = Credentials::from_header(auth_header.to_str()?.to_string()) {
-                if credentials.user_id != *username || credentials.password != *password {
-                    return Ok(Response::builder()
-                        .status(StatusCode::UNAUTHORIZED)
-                        .header("WWW-Authenticate", "Basic realm=\"Restricted\"")
-                        .body(Full::new(Bytes::from("401 Unauthorized")))
-                        .unwrap());
-                }
-            } else {
-                return Ok(Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .header("WWW-Authenticate", "Basic realm=\"Restricted\"")
-                    .body(Full::new(Bytes::from("401 Unauthorized")))
-                    .unwrap());
-            }
-        } else {
-            return Ok(Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"Restricted\"")
-                .body(Full::new(Bytes::from("401 Unauthorized")))
-                .unwrap());
+        if let Some(response) = validate_credentials(req.headers().get(hyper::header::AUTHORIZATION), &username, &password) {
+            return Ok(response);
         }
     }
+
     let path = req.uri().path();
     let full_path = if path == "/" {
         base_dir.clone()
@@ -77,69 +67,31 @@ async fn handle_request(
         base_dir.join(Path::new(&*decoded_path))
     };
 
-    // Security check - prevent path traversal
-    let canonical_path = full_path.canonicalize().map_err(|e| {
-    error!("Failed to canonicalize path: {}", e);
-        Box::new(e) as Box<dyn std::error::Error + Send + Sync>
-    })?;
-
     info!("Handling request in {}", base_dir.display());
+    let canonical_path = match validate_path(&full_path, &base_dir) {
+        Ok(path) => path,
+        Err(_) => return not_found_response(),
+    };
 
-    if !canonical_path.starts_with(&base_dir) {
-        Ok(Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(Full::new(Bytes::from("403 Forbidden")))
-            .unwrap())
-    } else {
-        match fs::metadata(&canonical_path) {
-            Ok(metadata) if metadata.is_dir() => {
-                let mut entries = fs::read_dir(&canonical_path)
-                    .unwrap()
-                    .map(|res| res.map(|e| e.path()))
-                    .collect::<Result<Vec<_>, io::Error>>()
-                    .unwrap();
-
-                entries.sort();
-
-                let mut html = String::from("<h1>Directory listing</h1><ul>");
-                for entry in entries {
-                    let name = entry.file_name().unwrap().to_string_lossy();
-                    let relative_path = entry.strip_prefix(&base_dir).unwrap();
-                    html.push_str(&format!(
-                        "<li><a href=\"{}\">{}</a></li>",
-                        relative_path.display(),
-                        name
-                    ));
-                }
-                html.push_str("</ul>");
-
-                Ok(Response::new(Full::new(Bytes::from(html))))
-            }
-            Ok(_) => {
-                let mime_type = from_path(&canonical_path).first_or_octet_stream();
-                let content = fs::read(&canonical_path).unwrap();
-                Response::builder()
-                    .header("Content-Type", mime_type.as_ref())
-                    .body(Full::new(Bytes::from(content)))
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-            }
-            Err(_) => Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from("404 Not Found")))
-                .unwrap()),
-        }
+    match fs::metadata(&canonical_path) {
+        Ok(metadata) if metadata.is_dir() => list_directory(&canonical_path, &base_dir),
+        Ok(_) => serve_file(&canonical_path),
+        Err(_) => not_found_response(),
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Initialize tracing subscriber with JSON output
-    fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .json()
-        .init();
-
     let args = Args::parse();
+
+    // Initialize tracing subscriber with CLI-configured log level
+    fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(args.log_level.parse().unwrap())
+                .from_env_lossy()
+        )
+        .init();
     let base_dir = PathBuf::from(args.directory).canonicalize()?;
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let username = args.username.clone();
