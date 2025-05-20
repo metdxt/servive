@@ -2,6 +2,7 @@ use clap::Parser;
 use http_body_util::Full;
 use hyper::{Request, Response, body::Bytes, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
+use local_ip_address::local_ip;
 use percent_encoding::percent_decode_str;
 use std::error::Error;
 use std::fs;
@@ -14,7 +15,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt};
-
 #[cfg(feature = "tls")]
 use rustls::ServerConfig;
 #[cfg(feature = "tls")]
@@ -103,6 +103,10 @@ struct Args {
     /// Forbid directory listing
     #[arg(long, default_value_t = false)]
     no_list_dirs: bool,
+
+    /// Bind to 0.0.0.0
+    #[arg(long, default_value_t = false)]
+    bind_all: bool,
 }
 
 async fn handle_request(
@@ -158,10 +162,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .from_env_lossy(),
         )
         .init();
+
     let base_dir = PathBuf::from(args.directory).canonicalize()?;
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let username = args.username.clone();
     let password = args.password.clone();
+    let addr = if args.bind_all{ SocketAddr::from(([0, 0, 0, 0], args.port)) }
+                           else { SocketAddr::from((local_ip().unwrap(), args.port)) };
 
     if username.is_some() && password.is_some() && !args.tls {
         warn!(
