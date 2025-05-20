@@ -1,0 +1,163 @@
+name: Release Build & Publish
+
+# Controls when the workflow will run
+on:
+  push:
+    tags:
+      - 'v*.*.*' # Trigger on version tags like v0.1.0, v1.0.0, etc.
+
+env:
+  CARGO_TERM_COLOR: always # Force color output in cargo logs
+  PROJECT_NAME: servive      # Define project name once
+
+# Permissions needed for creating releases and uploading assets
+permissions:
+  contents: write # Needed for gh release create/upload
+
+jobs:
+  # Job to create the GitHub Release itself
+  create_release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      # Pass the tag name to subsequent jobs
+      tag_name: ${{ github.ref_name }}
+    steps:
+      - name: Create Release Body (Placeholder)
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Use the tag name from the push event
+          tag_name: ${{ github.ref_name }}
+          # Automatically generate release notes from commits since the last tag
+          generate_release_notes: true
+          # Create as a draft initially, build jobs will publish later (optional, safer)
+          # draft: true
+        env:
+          # This token is provided by GitHub Actions and has necessary permissions
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Job to build the binaries for different targets and upload them
+  build_upload_assets:
+    name: Build & Upload Assets (${{ matrix.target }})
+    # This job depends on the release tag being available
+    needs: create_release
+    # Use a strategy matrix to build for multiple targets/OS
+    strategy:
+      fail-fast: false # Don't cancel other matrix jobs if one fails
+      matrix:
+        include:
+          # Linux x86_64 Build
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_suffix: linux-x86_64.tar.gz
+            use_cross: false
+          # Linux aarch64 Build (using cross-compilation)
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset_suffix: linux-aarch64.tar.gz
+            use_cross: true
+          # Windows x86_64 Build
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_suffix: windows-x86_64.zip
+            use_cross: false
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # --- Environment Setup ---
+
+      - name: Install Linux dependencies (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest' && matrix.use_cross == false # Only needed for native Linux build
+        run: |
+          sudo apt-get update -y
+          # Add libraries potentially needed by the 'image' crate features
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev \
+            libpng-dev libjpeg-dev libgif-dev libtiff-dev libwebp-dev \
+            libavif-dev # Add others if build errors occur
+
+      - name: Install 7-Zip using Chocolatey (Windows only)
+        if: matrix.os == 'windows-latest'
+        # Use choco, which is generally available on Windows runners
+        run: choco install 7zip.install --no-progress -y
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Install the target required by the matrix job
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-rs from crates.io (if needed for cross-compilation)
+        if: matrix.use_cross == true
+        # Install the latest stable version from crates.io
+        run: cargo install cross
+
+      # --- Build ---
+
+      - name: Build binary (using cargo)
+        if: matrix.use_cross == false
+        run: cargo build --verbose --release --target ${{ matrix.target }}
+
+      - name: Build binary (using cross)
+        if: matrix.use_cross == true
+        run: cross build --verbose --release --target ${{ matrix.target }}
+
+      # --- Packaging ---
+
+      - name: Prepare artifact details
+        id: prepare_artifact
+        shell: bash # Use bash for consistent variable setting across OS (via GITHUB_ENV)
+        run: |
+          # Determine binary name based on OS
+          BINARY_NAME="${{ env.PROJECT_NAME }}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          echo "BINARY_NAME=${BINARY_NAME}" >> $GITHUB_ENV
+
+          # Get the tag name (e.g., v0.1.0) from the needs context
+          VERSION_TAG=${{ needs.create_release.outputs.tag_name }}
+          # Define the final archive name
+          ARCHIVE_NAME="${{ env.PROJECT_NAME }}-${VERSION_TAG}-${{ matrix.asset_suffix }}"
+          # Define the path within the target directory where the binary is located
+          SOURCE_DIR="target/${{ matrix.target }}/release"
+
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
+          echo "ASSET_PATH=./${ARCHIVE_NAME}" >> $GITHUB_ENV
+          echo "SOURCE_DIR=${SOURCE_DIR}" >> $GITHUB_ENV
+          echo "TAG_NAME=${VERSION_TAG}" >> $GITHUB_ENV # Pass tag name for upload step
+
+
+      - name: Package binary (Linux - tar.gz)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          cd ${{ env.SOURCE_DIR }}
+          tar czvf ../../../${{ env.ARCHIVE_NAME }} ${{ env.BINARY_NAME }}
+          cd ../../../ # Return to workspace root
+
+      - name: Package binary (Windows - zip)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh # Use PowerShell on Windows runners
+        run: |
+          # Add Chocolatey's default 7zip location to PATH just in case
+          $env:PATH += ";C:\Program Files\7-Zip"
+          cd ${{ env.SOURCE_DIR }}
+          # Use 7z.exe for packaging
+          7z.exe a ../../../${{ env.ARCHIVE_NAME }} ${{ env.BINARY_NAME }}
+          cd ../../../ # Return to workspace root
+
+      # --- Upload ---
+
+      - name: Upload Release Asset using GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Get variables from the prepare_artifact step
+          ASSET_PATH: ${{ env.ASSET_PATH }}
+          TAG_NAME: ${{ env.TAG_NAME }}
+        run: |
+          gh release upload ${{ env.TAG_NAME }} ${{ env.ASSET_PATH }} --clobber
