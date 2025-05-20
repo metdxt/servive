@@ -2,6 +2,7 @@ use http_auth_basic::Credentials;
 use hyper::{Response, StatusCode};
 use http_body_util::Full;
 use bytes::Bytes;
+use subtle::ConstantTimeEq;
 
 pub fn validate_credentials(
     auth_header: Option<&hyper::header::HeaderValue>,
@@ -11,7 +12,8 @@ pub fn validate_credentials(
     match auth_header {
         Some(header) => {
             if let Ok(credentials) = Credentials::from_header(header.to_str().unwrap().to_string()) {
-                if credentials.user_id != username || credentials.password != password {
+                if !credentials.user_id.as_bytes().ct_eq(username.as_bytes()).unwrap_u8() == 1 || 
+                   !credentials.password.as_bytes().ct_eq(password.as_bytes()).unwrap_u8() == 1 {
                     return Some(unauthorized_response());
                 }
             } else {

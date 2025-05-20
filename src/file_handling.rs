@@ -6,9 +6,11 @@ use mime_guess::from_path;
 use hyper::Response;
 use http_body_util::Full;
 use bytes::Bytes;
-use tracing::error;
+use tracing::{error, warn};
 use std::error::Error;
 use crate::responses::{forbidden_response, not_found_response, ok_response, html_response};
+
+const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
 pub fn validate_path(
     path: &PathBuf,
@@ -34,7 +36,12 @@ pub fn validate_path(
 
 pub fn serve_file(path: &PathBuf) -> Result<Response<Full<Bytes>>, Box<dyn Error + Send + Sync>> {
     match fs::metadata(path) {
-        Ok(_) => {
+        Ok(metadata) => {
+            if metadata.len() > MAX_FILE_SIZE as u64 {
+                warn!("File size {} exceeds limit of {} bytes", metadata.len(), MAX_FILE_SIZE);
+                return forbidden_response();
+            }
+
             let mime_type = from_path(path).first_or_octet_stream();
             match fs::read(path) {
                 Ok(content) => ok_response(content, mime_type),
@@ -45,7 +52,15 @@ pub fn serve_file(path: &PathBuf) -> Result<Response<Full<Bytes>>, Box<dyn Error
     }
 }
 
-pub fn list_directory(path: &PathBuf, base_dir: &Path) -> Result<Response<Full<Bytes>>, Box<dyn Error + Send + Sync>> {
+pub fn list_directory(
+    path: &PathBuf, 
+    base_dir: &Path,
+    enable_listing: bool,
+) -> Result<Response<Full<Bytes>>, Box<dyn Error + Send + Sync>> {
+    if !enable_listing {
+        return forbidden_response();
+    }
+
     match fs::read_dir(path) {
         Ok(entries) => {
             let mut entries = entries
