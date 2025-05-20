@@ -68,6 +68,7 @@ servive --no-list-dirs
 | `--tls-cert`        | TLS certificate file path                       | None            |
 | `--tls-key`         | TLS private key file path                       | None            |
 | `--no-list-dirs`    | Disable directory listing                       | false           |
+| `--bind-all`        | Bind server to 0.0.0.0                          | false           |
 
 ## Security Considerations
 
