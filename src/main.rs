@@ -1,25 +1,23 @@
 use clap::Parser;
 use http_body_util::Full;
-use hyper::{
-    Request, Response, body::Bytes, server::conn::http1, service::service_fn,
-};
-use std::fs;
+use hyper::{Request, Response, body::Bytes, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use percent_encoding::percent_decode_str;
+use std::error::Error;
+use std::fs;
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tokio::net::TcpListener;
-use tracing::{Level, info, warn, error};
-use tracing_subscriber::{EnvFilter, fmt};
-use std::error::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
+use tracing::{Level, error, info, warn};
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[cfg(feature = "tls")]
 use rustls::ServerConfig;
-#[cfg(feature = "tls")] 
+#[cfg(feature = "tls")]
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 #[cfg(feature = "tls")]
 #[allow(unused_imports)]
@@ -39,7 +37,7 @@ async fn wrap_stream(
             let stream = acceptor.accept(stream).await?;
             Ok(TokioIo::new(Box::new(stream)))
         }
-        None => Ok(TokioIo::new(Box::new(stream)))
+        None => Ok(TokioIo::new(Box::new(stream))),
     }
 }
 
@@ -52,17 +50,23 @@ async fn wrap_stream(
 }
 
 mod auth;
-mod responses;
 mod file_handling;
+mod responses;
 mod security_headers;
 
-use auth::validate_credentials;
-use responses::not_found_response;
-use file_handling::{validate_path, serve_file, list_directory};
 use crate::security_headers::add_security_headers;
+use auth::validate_credentials;
+use file_handling::{list_directory, serve_file, validate_path};
+use responses::not_found_response;
 
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version = concat!(
+    env!("CARGO_PKG_VERSION"), 
+    " (commit: ", env!("GIT_HASH"), ")", 
+    ", features: [", env!("COMPILED_FEATURES"), "]"
+), 
+    about="A stupid simple program to serve files over HTTP")
+]
 struct Args {
     /// Port to listen on
     #[arg(short, long, default_value_t = 8000)]
@@ -107,11 +111,15 @@ async fn handle_request(
     username: Option<String>,
     password: Option<String>,
     use_tls: bool,
-    list_dirs: bool
+    list_dirs: bool,
 ) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
     // Check auth if credentials are provided
     if let (Some(username), Some(password)) = (&username, &password) {
-        if let Some(response) = validate_credentials(req.headers().get(hyper::header::AUTHORIZATION), &username, &password) {
+        if let Some(response) = validate_credentials(
+            req.headers().get(hyper::header::AUTHORIZATION),
+            &username,
+            &password,
+        ) {
             return Ok(response);
         }
     }
@@ -128,7 +136,7 @@ async fn handle_request(
         Ok(path) => path,
         Err(_) => return not_found_response(),
     };
-    info!(uri_path=path, full_path=canonical_path.to_str());
+    info!(uri_path = path, full_path = canonical_path.to_str());
     let response = match fs::metadata(&canonical_path) {
         Ok(metadata) if metadata.is_dir() => list_directory(&canonical_path, &base_dir, list_dirs),
         Ok(_) => serve_file(&canonical_path),
@@ -147,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_env_filter(
             EnvFilter::builder()
                 .with_default_directive(args.log_level.parse().unwrap())
-                .from_env_lossy()
+                .from_env_lossy(),
         )
         .init();
     let base_dir = PathBuf::from(args.directory).canonicalize()?;
@@ -156,10 +164,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let password = args.password.clone();
 
     if username.is_some() && password.is_some() && !args.tls {
-        warn!("Basic Auth is being used without TLS - credentials will be transmitted in plaintext!");
+        warn!(
+            "Basic Auth is being used without TLS - credentials will be transmitted in plaintext!"
+        );
     }
 
-    info!("Serving files from {} on port {}", base_dir.display(), args.port);
+    info!(
+        "Serving files from {} on port {}",
+        base_dir.display(),
+        args.port
+    );
 
     #[cfg(feature = "tls")]
     let listener: (TcpListener, Option<Arc<ServerConfig>>) = if args.tls {
@@ -167,11 +181,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let key_file = fs::read(args.tls_key.unwrap())?;
         let certs = vec![CertificateDer::from(cert_file)];
         let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(key_file));
-        
+
         let config = Arc::new(
             ServerConfig::builder()
                 .with_no_client_auth()
-                .with_single_cert(certs, key)?
+                .with_single_cert(certs, key)?,
         );
 
         let listener = TcpListener::bind(addr).await?;
@@ -183,8 +197,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         (listener, None)
     };
 
-#[cfg(not(feature = "tls"))]
-let listener: (TcpListener, Option<()>) = {
+    #[cfg(not(feature = "tls"))]
+    let listener: (TcpListener, Option<()>) = {
         let listener = TcpListener::bind(addr).await?;
         info!("Listening without TLS on {}", addr);
         (listener, Some(()))
@@ -192,7 +206,7 @@ let listener: (TcpListener, Option<()>) = {
 
     loop {
         let (stream, _) = listener.0.accept().await?;
-        
+
         let io = wrap_stream(stream, listener.1.clone()).await?;
         let base_dir = base_dir.clone();
         let username = username.clone();
@@ -211,7 +225,14 @@ let listener: (TcpListener, Option<()>) = {
                             version = ?req.version()
                         );
                         let _enter = span.enter();
-                        handle_request(base_dir.clone(), req, username.clone(), password.clone(), args.tls, !args.no_list_dirs)
+                        handle_request(
+                            base_dir.clone(),
+                            req,
+                            username.clone(),
+                            password.clone(),
+                            args.tls,
+                            !args.no_list_dirs,
+                        )
                     }),
                 )
                 .await
