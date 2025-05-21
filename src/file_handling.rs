@@ -27,7 +27,7 @@ pub fn validate_path(
             }
         }
         Err(e) => {
-            error!("Failed to canonicalize path: {}", e);
+            error!(error=%e, path=%path.to_string_lossy());
             not_found_response()?;
             Err("Not found".into())
         }
@@ -38,7 +38,7 @@ pub fn serve_file(path: &PathBuf) -> Result<Response<Full<Bytes>>, Box<dyn Error
     match fs::metadata(path) {
         Ok(metadata) => {
             if metadata.len() > MAX_FILE_SIZE as u64 {
-                warn!("File size {} exceeds limit of {} bytes", metadata.len(), MAX_FILE_SIZE);
+                warn!(error="File size exceeds limit of bytes", path=%path.to_string_lossy(), file_size=%metadata.len(), limit=%MAX_FILE_SIZE);
                 return forbidden_response();
             }
 

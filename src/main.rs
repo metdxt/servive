@@ -118,6 +118,15 @@ async fn handle_request(
     use_tls: bool,
     list_dirs: bool,
 ) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+    let span = tracing::span!(
+        Level::INFO,
+        "request",
+        method = %format!("{:?}", req.method()),
+        uri = %req.uri(),
+        version = ?req.version(),
+    );
+    let _enter = span.enter();
+
     // Check auth if credentials are provided
     if let (Some(username), Some(password)) = (&username, &password) {
         if let Some(response) = validate_credentials(
@@ -141,13 +150,13 @@ async fn handle_request(
         Ok(path) => path,
         Err(_) => return not_found_response(),
     };
-    info!(uri_path = path, full_path = canonical_path.to_str());
+    
     let response = match fs::metadata(&canonical_path) {
         Ok(metadata) if metadata.is_dir() => list_directory(&canonical_path, &base_dir, list_dirs),
         Ok(_) => serve_file(&canonical_path),
         Err(_) => not_found_response(),
     }?;
-
+    info!(status=%response.status(), full_path = %canonical_path.to_string_lossy());
     add_security_headers(response, use_tls)
 }
 
@@ -225,14 +234,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .serve_connection(
                     io,
                     service_fn(move |req| {
-                        let span = tracing::span!(
-                            Level::INFO,
-                            "request",
-                            method = %format!("{:?}", req.method()),
-                            uri = %req.uri(),
-                            version = ?req.version()
-                        );
-                        let _enter = span.enter();
                         handle_request(
                             base_dir.clone(),
                             req,
