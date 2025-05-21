@@ -1,34 +1,35 @@
-use hyper::Response;
+use hyper::{Response, header::HeaderValue};
 use http_body_util::Full;
 use bytes::Bytes;
 use hyper::http::StatusCode;
 use mime_guess::mime::Mime;
-use std::error::Error;
+use crate::error::{AppError, Result};
 
-pub fn forbidden_response() -> Result<Response<Full<Bytes>>, Box<dyn Error + Send + Sync>> {
-    Ok(Response::builder()
+pub fn unauthorized_response() -> Result<Response<Full<Bytes>>> {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("WWW-Authenticate", HeaderValue::from_static("Basic realm=\"Restricted\""))
+        .body(Full::new(Bytes::from("401 Unauthorized")))
+        .map_err(AppError::from)
+}
+
+pub fn forbidden_response() -> Result<Response<Full<Bytes>>> {
+    Response::builder()
         .status(StatusCode::FORBIDDEN)
         .body(Full::new(Bytes::from("403 Forbidden")))
-        .unwrap())
+        .map_err(AppError::from)
 }
 
-pub fn not_found_response() -> Result<Response<Full<Bytes>>, Box<dyn Error + Send + Sync>> {
-    Ok(Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Full::new(Bytes::from("404 Not Found")))
-        .unwrap())
-}
-
-pub fn ok_response(content: Vec<u8>, content_type: Mime) -> Result<Response<Full<Bytes>>, Box<dyn Error + Send + Sync>> {
-    Ok(Response::builder()
+pub fn ok_response(content: Vec<u8>, content_type: Mime) -> Result<Response<Full<Bytes>>> {
+    Response::builder()
         .header("Content-Type", content_type.as_ref())
         .body(Full::new(Bytes::from(content)))
-        .unwrap())
+        .map_err(AppError::from)
 }
 
-pub fn html_response(html: String) -> Result<Response<Full<Bytes>>, Box<dyn Error + Send + Sync>> {
-    Ok(Response::builder()
+pub fn html_response(html: String) -> Result<Response<Full<Bytes>>> {
+    Response::builder()
         .header("Content-Type", "text/html")
         .body(Full::new(Bytes::from(html)))
-        .unwrap())
+        .map_err(AppError::from)
 }

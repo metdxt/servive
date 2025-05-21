@@ -3,7 +3,8 @@ use http_body_util::Full;
 use hyper::{Request, Response, body::Bytes, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use percent_encoding::percent_decode_str;
-use std::error::Error;
+mod error;
+use crate::error::{AppError, Result};
 use std::fs;
 use std::net::IpAddr;
 use local_ip_address::list_afinet_netifas;
@@ -14,7 +15,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
-use tracing::{Level, error, info, warn};
+use tracing::{Level, error, info, warn, Instrument};
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[cfg(feature = "tls")]
@@ -32,7 +33,7 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
 async fn wrap_stream(
     stream: tokio::net::TcpStream,
     tls_config: Option<Arc<ServerConfig>>,
-) -> Result<TokioIo<Box<dyn AsyncReadWrite + Send + Sync>>, Box<dyn Error + Send + Sync>> {
+) -> Result<TokioIo<Box<dyn AsyncReadWrite + Send + Sync>>> {
     match tls_config {
         Some(config) => {
             let acceptor = tokio_rustls::TlsAcceptor::from(config);
@@ -47,19 +48,23 @@ async fn wrap_stream(
 async fn wrap_stream(
     stream: tokio::net::TcpStream,
     _tls_config: Option<()>,
-) -> Result<TokioIo<Box<dyn AsyncReadWrite + Send + Sync>>, Box<dyn Error + Send + Sync>> {
+) -> Result<TokioIo<Box<dyn AsyncReadWrite + Send + Sync>>> {
     Ok(TokioIo::new(Box::new(stream)))
 }
 
 mod auth;
-mod file_handling;
+mod common;
+mod directory_listing;
+mod file_serving;
+mod path_validation;
 mod responses;
 mod security_headers;
 
 use crate::security_headers::add_security_headers;
 use auth::validate_credentials;
-use file_handling::{list_directory, serve_file, validate_path};
-use responses::not_found_response;
+use directory_listing::list_directory;
+use file_serving::serve_file;
+use path_validation::validate_path;
 
 #[derive(Parser, Debug)]
 #[command(version = concat!(
@@ -118,7 +123,7 @@ async fn handle_request(
     password: Option<String>,
     use_tls: bool,
     list_dirs: bool,
-) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Response<Full<Bytes>>> {
     let span = tracing::span!(
         Level::INFO,
         "request",
@@ -130,13 +135,15 @@ async fn handle_request(
 
     // Check auth if credentials are provided
     if let (Some(username), Some(password)) = (&username, &password) {
-        if let Some(response) = validate_credentials(
-            req.headers().get(hyper::header::AUTHORIZATION),
-            &username,
-            &password,
-        ) {
-            return Ok(response);
-        }
+            match validate_credentials(
+                req.headers().get(hyper::header::AUTHORIZATION),
+                &username,
+                &password,
+            ) {
+                Ok(Some(response)) => return Ok(response),
+                Ok(None) => (),
+                Err(e) => return Err(e),
+            }
     }
 
     let path = req.uri().path();
@@ -149,20 +156,23 @@ async fn handle_request(
 
     let canonical_path = match validate_path(&full_path, &base_dir) {
         Ok(path) => path,
-        Err(_) => return not_found_response(),
+        Err(e) => return Err(AppError::from(e)),
     };
     
     let response = match fs::metadata(&canonical_path) {
         Ok(metadata) if metadata.is_dir() => list_directory(&canonical_path, &base_dir, list_dirs),
         Ok(_) => serve_file(&canonical_path),
-        Err(_) => not_found_response(),
+        Err(e) => Err(AppError::NotFound {
+            path: canonical_path.clone(),
+            source: e
+        })
     }?;
     info!(status=%response.status(), full_path = %canonical_path.to_string_lossy());
     add_security_headers(response, use_tls)
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize tracing subscriber with CLI-configured log level
@@ -173,9 +183,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .from_env_lossy(),
         )
         .init();
-    let base_dir = PathBuf::from(args.directory).canonicalize()?;
-    let ip_addr: IpAddr = args.bind.parse().map_err(|_| {
-        format!("Invalid bind address '{}' - must be valid IPv4 or IPv6", args.bind)
+    let directory = args.directory.clone();
+    let base_dir = PathBuf::from(&directory)
+        .canonicalize()
+        .map_err(|e| AppError::Io {
+            path: PathBuf::from(directory),
+            source: e,
+        })?;
+    let ip_addr: IpAddr = args.bind.parse().map_err(|_| AppError::InvalidBindAddress {
+        address: args.bind.clone(),
     })?;
     let addr = SocketAddr::new(ip_addr, args.port);
     let username = args.username.clone();
@@ -301,20 +317,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
                     io,
-                    service_fn(move |req| {
-                        handle_request(
-                            base_dir.clone(),
-                            req,
-                            username.clone(),
-                            password.clone(),
-                            args.tls,
-                            !args.no_list_dirs,
-                        )
+                    service_fn({
+                        let base_dir = base_dir.clone();
+                        let username = username.clone();
+                        let password = password.clone();
+                        let tls = args.tls;
+                        let list_dirs = !args.no_list_dirs;
+                        
+                        move |req| {
+                            let span = tracing::span!(
+                                Level::ERROR,
+                                "connection",
+                                method = %req.method(),
+                                uri = %req.uri(),
+                            );
+                            let base_dir = base_dir.clone();
+                            let username = username.clone();
+                            let password = password.clone();
+                            
+                            async move {
+                                let result = handle_request(
+                                    base_dir,
+                                    req,
+                                    username,
+                                    password,
+                                    tls,
+                                    list_dirs,
+                                ).await;
+                                
+                                if let Err(e) = &result {
+                                    error!(error=%e, "Request failed");
+                                }
+                                result
+                            }
+                            .instrument(span)
+                        }
                     }),
                 )
                 .await
             {
-                error!("Error serving connection: {}", err);
+                error!(error=%err, "Connection failed");
             }
         });
     }
