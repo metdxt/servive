@@ -20,6 +20,24 @@ pub fn forbidden_response() -> Result<Response<Full<Bytes>>> {
         .map_err(AppError::from)
 }
 
+pub fn error_response(err: AppError) -> Result<Response<Full<Bytes>>> {
+    match err {
+        AppError::NotFound { .. } => {
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Full::new(Bytes::from("404 Not Found")))
+                .map_err(AppError::from)
+        }
+        AppError::Forbidden { .. } => forbidden_response(),
+        _ => {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Full::new(Bytes::from("500 Internal Server Error")))
+                .map_err(AppError::from)
+        }
+    }
+}
+
 pub fn ok_response(content: Vec<u8>, content_type: Mime) -> Result<Response<Full<Bytes>>> {
     Response::builder()
         .header("Content-Type", content_type.as_ref())

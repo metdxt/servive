@@ -1,14 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::fs;
-use tracing::error;
-use crate::error::{AppError, Result};
+use crate::error::AppError;
 use crate::responses::{forbidden_response, html_response};
+use crate::path_validation::contains_dotfile;
 
 pub fn list_directory(
     path: &PathBuf, 
     base_dir: &Path,
     enable_listing: bool,
-) -> Result<hyper::Response<http_body_util::Full<bytes::Bytes>>> {
+    show_dotfiles: bool,
+) -> std::result::Result<hyper::Response<http_body_util::Full<bytes::Bytes>>, AppError> {
     if !enable_listing {
         return forbidden_response();
     }
@@ -18,7 +19,10 @@ pub fn list_directory(
             let mut paths = Vec::new();
             for entry in entries {
                 let entry = entry.map_err(|e| AppError::StdIo { source: e })?;
-                paths.push(entry.path());
+                let path = entry.path();
+                if show_dotfiles || !contains_dotfile(&path, show_dotfiles) {
+                    paths.push(path);
+                }
             }
 
             paths.sort();
@@ -41,7 +45,6 @@ pub fn list_directory(
             html_response(html)
         }
         Err(e) => {
-            error!("Failed to read directory {}: {}", path.display(), e);
             Err(AppError::NotFound {
                 path: path.clone(),
                 source: e

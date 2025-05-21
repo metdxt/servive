@@ -55,6 +55,7 @@ async fn handle_request(
     password: Option<String>,
     use_tls: bool,
     list_dirs: bool,
+    show_dotfiles: bool,
     ) -> Result<Response<Full<Bytes>>> {
     let span = tracing::span!(
         Level::INFO,
@@ -86,14 +87,14 @@ async fn handle_request(
         base_dir.join(Path::new(&*decoded_path))
     };
 
-    let canonical_path = match validate_path(&full_path, &base_dir) {
+    let canonical_path = match validate_path(&full_path, &base_dir, show_dotfiles) {
         Ok(path) => path,
         Err(e) => return Err(AppError::from(e)),
     };
     
     let response = match fs::metadata(&canonical_path) {
-        Ok(metadata) if metadata.is_dir() => list_directory(&canonical_path, &base_dir, list_dirs),
-        Ok(_) => serve_file(&canonical_path),
+        Ok(metadata) if metadata.is_dir() => list_directory(&canonical_path, &base_dir, list_dirs, show_dotfiles),
+        Ok(_) => serve_file(&canonical_path, show_dotfiles),
         Err(e) => Err(AppError::NotFound {
             path: canonical_path.clone(),
             source: e
@@ -179,6 +180,7 @@ async fn main() -> Result<()> {
                         let username = username.clone();
                         let password = password.clone();
                         let tls = tls_enabled;
+                        let show_dotfiles = args.show_dotfiles;
                         
                         move |req| {
                             let span = tracing::span!(
@@ -192,19 +194,21 @@ async fn main() -> Result<()> {
                             let password = password.clone();
                             
                             async move {
-                                let result = handle_request(
+                                match handle_request(
                                     base_dir,
                                     req,
                                     username,
                                     password,
                                     tls,
                                     list_dirs,
-                                ).await;
-                                
-                                if let Err(e) = &result {
-                                    error!(error=%e, "Request failed");
+                                    show_dotfiles,
+                                ).await {
+                                    Ok(response) => Ok(response),
+                                    Err(e) => {
+                                        error!(error=%e, "Request failed");
+                                        crate::responses::error_response(e)
+                                    }
                                 }
-                                result
                             }
                             .instrument(span)
                         }

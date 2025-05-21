@@ -50,6 +50,10 @@ pub struct Args {
     /// Bind address (IPv4 or IPv6)
     #[arg(short, long, value_name="ADDRESS", default_value = "127.0.0.1")]
     pub bind: String,
+
+    /// Show dotfiles (hidden by default)
+    #[arg(long, default_value_t = false)]
+    pub show_dotfiles: bool,
 }
 
 pub struct Config {
