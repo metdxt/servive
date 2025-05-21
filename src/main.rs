@@ -1,120 +1,52 @@
-use clap::Parser;
-use http_body_util::Full;
-use hyper::{Request, Response, body::Bytes, server::conn::http1, service::service_fn};
-use hyper_util::rt::TokioIo;
-use percent_encoding::percent_decode_str;
-mod error;
-use crate::error::{AppError, Result};
-use std::fs;
-use std::net::IpAddr;
-use local_ip_address::list_afinet_netifas;
-use std::{
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpListener;
-use tracing::{Level, error, info, warn, Instrument};
-use tracing_subscriber::{EnvFilter, fmt};
-
-#[cfg(feature = "tls")]
-use rustls::ServerConfig;
-#[cfg(feature = "tls")]
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-#[cfg(feature = "tls")]
-#[allow(unused_imports)]
-use tokio_rustls::TlsAcceptor;
-
-trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Unpin {}
-impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
-
-#[cfg(feature = "tls")]
-async fn wrap_stream(
-    stream: tokio::net::TcpStream,
-    tls_config: Option<Arc<ServerConfig>>,
-) -> Result<TokioIo<Box<dyn AsyncReadWrite + Send + Sync>>> {
-    match tls_config {
-        Some(config) => {
-            let acceptor = tokio_rustls::TlsAcceptor::from(config);
-            let stream = acceptor.accept(stream).await?;
-            Ok(TokioIo::new(Box::new(stream)))
-        }
-        None => Ok(TokioIo::new(Box::new(stream))),
-    }
-}
-
-#[cfg(not(feature = "tls"))]
-async fn wrap_stream(
-    stream: tokio::net::TcpStream,
-    _tls_config: Option<()>,
-) -> Result<TokioIo<Box<dyn AsyncReadWrite + Send + Sync>>> {
-    Ok(TokioIo::new(Box::new(stream)))
-}
-
+// Internal modules
 mod auth;
 mod common;
+mod config;
 mod directory_listing;
+mod error;
 mod file_serving;
+mod networking;
 mod path_validation;
 mod responses;
 mod security_headers;
+mod tls;
 
-use crate::security_headers::add_security_headers;
+// Standard library imports
+use std::{
+    fs,
+    net::{IpAddr, SocketAddr},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+// External crate imports
+use http_body_util::Full;
+use hyper::{
+    body::Bytes,
+    server::conn::http1,
+    service::service_fn,
+    Request, Response,
+};
+use percent_encoding::percent_decode_str;
+use tokio::net::TcpListener;
+use tracing::{error, info, warn, Instrument, Level};
+use tracing_subscriber::{fmt, EnvFilter};
+
+// Internal crate imports
+use crate::{
+    error::{AppError, Result},
+    security_headers::add_security_headers,
+    tls::wrap_stream,
+};
+
+#[cfg(feature = "tls")]
+use crate::tls::configure_tls;
+#[cfg(feature = "tls")]
+use rustls::server::ServerConfig;
 use auth::validate_credentials;
-use directory_listing::list_directory;
+use directory_listing::list_directory; 
 use file_serving::serve_file;
 use path_validation::validate_path;
-
-#[derive(Parser, Debug)]
-#[command(version = concat!(
-    env!("CARGO_PKG_VERSION"), 
-    " (commit: ", env!("GIT_HASH"), ")", 
-    ", features: [", env!("COMPILED_FEATURES"), "]"
-), 
-    about="A stupid simple program to serve files over HTTP")
-]
-struct Args {
-    /// Port to listen on
-    #[arg(short, long, default_value_t = 8000)]
-    port: u16,
-
-    /// Directory to serve files from
-    #[arg(short, long, default_value = ".")]
-    directory: String,
-
-    /// Username for basic auth (optional)
-    #[arg(long)]
-    username: Option<String>,
-
-    /// Password for basic auth (optional)
-    #[arg(long)]
-    password: Option<String>,
-
-    /// Logging level (error, warn, info, debug, trace)
-    #[arg(short, long, default_value = "info")]
-    log_level: String,
-
-    /// Enable TLS (requires cert and key)
-    #[arg(long)]
-    tls: bool,
-
-    /// TLS certificate file path
-    #[arg(long, requires = "tls")]
-    tls_cert: Option<String>,
-
-    /// TLS private key file path
-    #[arg(long, requires = "tls")]
-    tls_key: Option<String>,
-
-    /// Forbid directory listing
-    #[arg(long, default_value_t = false)]
-    no_list_dirs: bool,
-
-    /// Bind address (IPv4 or IPv6)
-    #[arg(short, long, value_name="ADDRESS", default_value = "127.0.0.1")]
-    bind: String,
-}
 
 async fn handle_request(
     base_dir: PathBuf,
@@ -173,7 +105,10 @@ async fn handle_request(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let config = config::Config::new()?;
+    let tls_enabled = config.args.tls;
+    let list_dirs = !config.args.no_list_dirs;
+    let config::Config { args, base_dir } = config;
 
     // Initialize tracing subscriber with CLI-configured log level
     fmt()
@@ -183,13 +118,6 @@ async fn main() -> Result<()> {
                 .from_env_lossy(),
         )
         .init();
-    let directory = args.directory.clone();
-    let base_dir = PathBuf::from(&directory)
-        .canonicalize()
-        .map_err(|e| AppError::Io {
-            path: PathBuf::from(directory),
-            source: e,
-        })?;
     let ip_addr: IpAddr = args.bind.parse().map_err(|_| AppError::InvalidBindAddress {
         address: args.bind.clone(),
     })?;
@@ -205,93 +133,19 @@ async fn main() -> Result<()> {
 
     info!("Serving files from {} on port {}", base_dir.display(), args.port);
 
-    // Format connection URLs based on bind address
-    let protocol = if args.tls { "https" } else { "http" };
-    let connection_urls = match ip_addr {
-        IpAddr::V4(ip) if ip.is_loopback() => {
-            vec![format!("{}://127.0.0.1:{}/", protocol, args.port)]
-        }
-        IpAddr::V6(ip) if ip.is_loopback() => {
-            vec![format!("{}://[::1]:{}/", protocol, args.port)]
-        }
-        IpAddr::V4(ip) if ip.is_unspecified() => {
-            // For 0.0.0.0, show all available IPs including localhost
-            let mut urls = vec![
-                format!("{}://127.0.0.1:{}/", protocol, args.port),
-                format!("{}://[::1]:{}/", protocol, args.port)
-            ];
-            if let Ok(netifs) = list_afinet_netifas() {
-                for (ifname, ip) in netifs {
-                    match ip {
-                        IpAddr::V4(ipv4) if !ipv4.is_loopback() => {
-                            urls.push(format!("{}://{}:{}/", protocol, ipv4, args.port));
-                        }
-                        IpAddr::V6(ipv6) if !ipv6.is_loopback() => {
-                            let url = if ipv6.is_unicast_link_local() {
-                                format!("{}://[{}%{}]:{}/", protocol, ipv6, ifname, args.port)
-                            } else {
-                                format!("{}://[{}]:{}/", protocol, ipv6, args.port)
-                            };
-                            urls.push(url);
-                        }
-                        _ => (),
-                    }
-                }
-            }
-            urls
-        }
-        IpAddr::V6(ip) if ip.is_unspecified() => {
-            // For ::, show all available IPs including localhost
-            let mut urls = vec![
-                format!("{}://127.0.0.1:{}/", protocol, args.port),
-                format!("{}://[::1]:{}/", protocol, args.port)
-            ];
-            if let Ok(netifs) = list_afinet_netifas() {
-                for (ifname, ip) in netifs {
-                    if let IpAddr::V6(ipv6) = ip {
-                        if !ipv6.is_loopback() {
-                            let url = if ipv6.is_unicast_link_local() {
-                                format!("{}://[{}%{}]:{}/", protocol, ipv6, ifname, args.port)
-                            } else {
-                                format!("{}://[{}]:{}/", protocol, ipv6, args.port)
-                            };
-                            urls.push(url);
-                        }
-                    }
-                }
-            }
-            urls
-        }
-        IpAddr::V6(ip) => vec![format!("{}://[{}]:{}/", protocol, ip, args.port)],
-        _ => vec![format!("{}://{}:{}/", protocol, ip_addr, args.port)],
-    };
-
-    info!("Server available at:");
-    for url in &connection_urls {
-        if url.contains("[fe80::") {
-            info!("- {} (link-local IPv6 - may not be accessible from browsers)", url);
-        } else {
-            info!("- {}", url);
-        }
-    }
-    info!("Note: Link-local IPv6 addresses (fe80::) may not be accessible from browsers directly");
+    let connection_urls = networking::generate_connection_urls(ip_addr, args.port, args.tls);
+    crate::networking::log_connection_urls(&connection_urls);
 
     #[cfg(feature = "tls")]
     let listener: (TcpListener, Option<Arc<ServerConfig>>) = if args.tls {
-        let cert_file = fs::read(args.tls_cert.unwrap())?;
-        let key_file = fs::read(args.tls_key.unwrap())?;
-        let certs = vec![CertificateDer::from(cert_file)];
-        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(key_file));
-
-        let config = Arc::new(
-            ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(certs, key)?,
-        );
+        let tls_config = configure_tls(
+            args.tls_cert.clone().unwrap(),
+            args.tls_key.clone().unwrap(),
+        ).map_err(AppError::from)?;
 
         let listener = TcpListener::bind(addr).await?;
         info!("Listening with TLS on {}", addr);
-        (listener, Some(config))
+        (listener, Some(tls_config))
     } else {
         let listener = TcpListener::bind(addr).await?;
         info!("Listening without TLS on {}", addr);
@@ -313,6 +167,9 @@ async fn main() -> Result<()> {
         let username = username.clone();
         let password = password.clone();
 
+        let tls_enabled = tls_enabled;
+        let list_dirs = list_dirs;
+        
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
@@ -321,8 +178,7 @@ async fn main() -> Result<()> {
                         let base_dir = base_dir.clone();
                         let username = username.clone();
                         let password = password.clone();
-                        let tls = args.tls;
-                        let list_dirs = !args.no_list_dirs;
+                        let tls = tls_enabled;
                         
                         move |req| {
                             let span = tracing::span!(

@@ -1,6 +1,7 @@
 use std::{path::PathBuf, io};
 use hyper::header::InvalidHeaderValue;
 use thiserror::Error;
+use crate::tls::TlsError;
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -35,6 +36,11 @@ pub enum AppError {
     #[error("TLS configuration error: {source}")]
     Tls {
         #[from] source: rustls::Error,
+    },
+
+    #[error("TLS error: {source}")]
+    TlsWrapper {
+        #[from] source: TlsError,
     },
 
     #[error("HTTP error: {source}")]
