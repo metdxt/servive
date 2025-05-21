@@ -5,6 +5,7 @@ use hyper_util::rt::TokioIo;
 use percent_encoding::percent_decode_str;
 use std::error::Error;
 use std::fs;
+use std::net::IpAddr;
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -103,6 +104,10 @@ struct Args {
     /// Forbid directory listing
     #[arg(long, default_value_t = false)]
     no_list_dirs: bool,
+
+    /// Bind address (IPv4 or IPv6)
+    #[arg(short, long, value_name="ADDRESS", default_value = "127.0.0.1")]
+    bind: String,
 }
 
 async fn handle_request(
@@ -159,7 +164,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .init();
     let base_dir = PathBuf::from(args.directory).canonicalize()?;
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    let ip_addr: IpAddr = args.bind.parse().map_err(|_| {
+        format!("Invalid bind address '{}' - must be valid IPv4 or IPv6", args.bind)
+    })?;
+    let addr = SocketAddr::new(ip_addr, args.port);
     let username = args.username.clone();
     let password = args.password.clone();
 

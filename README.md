@@ -55,6 +55,18 @@ servive --tls --tls-cert cert.pem --tls-key key.pem
 servive --no-list-dirs
 ```
 
+### With specific bind address
+
+IPv4:
+```sh
+servive -b 192.168.1.100
+```
+
+IPv6:
+```sh
+servive -b ::1
+```
+
 ## Configuration Options
 
 | Option              | Description                                     | Default         |
@@ -68,6 +80,7 @@ servive --no-list-dirs
 | `--tls-cert`        | TLS certificate file path                       | None            |
 | `--tls-key`         | TLS private key file path                       | None            |
 | `--no-list-dirs`    | Disable directory listing                       | false           |
+| `-b`, `--bind`      | Bind address (IPv4 or IPv6)                     | 127.0.0.1       |
 
 ## Security Considerations
 
