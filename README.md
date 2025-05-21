@@ -81,6 +81,7 @@ servive -b ::1
 | `--tls-key`         | TLS private key file path                       | None            |
 | `--no-list-dirs`    | Disable directory listing                       | false           |
 | `-b`, `--bind`      | Bind address (IPv4 or IPv6)                     | 127.0.0.1       |
+| `--show-dotfiles`   | Show dotfiles (hidden by default)               | false           |
 
 ## Security Considerations
 
