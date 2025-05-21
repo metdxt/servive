@@ -6,6 +6,7 @@ use percent_encoding::percent_decode_str;
 use std::error::Error;
 use std::fs;
 use std::net::IpAddr;
+use local_ip_address::list_afinet_netifas;
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -186,11 +187,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
-    info!(
-        "Serving files from {} on port {}",
-        base_dir.display(),
-        args.port
-    );
+    info!("Serving files from {} on port {}", base_dir.display(), args.port);
+
+    // Format connection URLs based on bind address
+    let protocol = if args.tls { "https" } else { "http" };
+    let connection_urls = match ip_addr {
+        IpAddr::V4(ip) if ip.is_loopback() => {
+            vec![format!("{}://127.0.0.1:{}/", protocol, args.port)]
+        }
+        IpAddr::V6(ip) if ip.is_loopback() => {
+            vec![format!("{}://[::1]:{}/", protocol, args.port)]
+        }
+        IpAddr::V4(ip) if ip.is_unspecified() => {
+            // For 0.0.0.0, show all available IPs including localhost
+            let mut urls = vec![
+                format!("{}://127.0.0.1:{}/", protocol, args.port),
+                format!("{}://[::1]:{}/", protocol, args.port)
+            ];
+            if let Ok(netifs) = list_afinet_netifas() {
+                for (_, ip) in netifs {
+                    match ip {
+                        IpAddr::V4(ipv4) if !ipv4.is_loopback() => {
+                            urls.push(format!("{}://{}:{}/", protocol, ipv4, args.port));
+                        }
+                        IpAddr::V6(ipv6) if !ipv6.is_loopback() => {
+                            urls.push(format!("{}://[{}]:{}/", protocol, ipv6, args.port));
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            urls
+        }
+        IpAddr::V6(ip) if ip.is_unspecified() => {
+            // For ::, show all available IPs including localhost
+            let mut urls = vec![
+                format!("{}://127.0.0.1:{}/", protocol, args.port),
+                format!("{}://[::1]:{}/", protocol, args.port)
+            ];
+            if let Ok(netifs) = list_afinet_netifas() {
+                for (_, ip) in netifs {
+                    if let IpAddr::V6(ipv6) = ip {
+                        if !ipv6.is_loopback() {
+                            urls.push(format!("{}://[{}]:{}/", protocol, ipv6, args.port));
+                        }
+                    }
+                }
+            }
+            urls
+        }
+        IpAddr::V6(ip) => vec![format!("{}://[{}]:{}/", protocol, ip, args.port)],
+        _ => vec![format!("{}://{}:{}/", protocol, ip_addr, args.port)],
+    };
+
+    info!("Server available at:");
+    for url in &connection_urls {
+        if url.contains("[fe80::") {
+            info!("- {} (link-local IPv6 - may not be accessible from browsers)", url);
+        } else {
+            info!("- {}", url);
+        }
+    }
+    info!("Note: Link-local IPv6 addresses (fe80::) may not be accessible from browsers directly");
 
     #[cfg(feature = "tls")]
     let listener: (TcpListener, Option<Arc<ServerConfig>>) = if args.tls {
