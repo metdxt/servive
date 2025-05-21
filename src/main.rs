@@ -205,13 +205,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 format!("{}://[::1]:{}/", protocol, args.port)
             ];
             if let Ok(netifs) = list_afinet_netifas() {
-                for (_, ip) in netifs {
+                for (ifname, ip) in netifs {
                     match ip {
                         IpAddr::V4(ipv4) if !ipv4.is_loopback() => {
                             urls.push(format!("{}://{}:{}/", protocol, ipv4, args.port));
                         }
                         IpAddr::V6(ipv6) if !ipv6.is_loopback() => {
-                            urls.push(format!("{}://[{}]:{}/", protocol, ipv6, args.port));
+                            let url = if ipv6.is_unicast_link_local() {
+                                format!("{}://[{}%{}]:{}/", protocol, ipv6, ifname, args.port)
+                            } else {
+                                format!("{}://[{}]:{}/", protocol, ipv6, args.port)
+                            };
+                            urls.push(url);
                         }
                         _ => (),
                     }
@@ -226,10 +231,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 format!("{}://[::1]:{}/", protocol, args.port)
             ];
             if let Ok(netifs) = list_afinet_netifas() {
-                for (_, ip) in netifs {
+                for (ifname, ip) in netifs {
                     if let IpAddr::V6(ipv6) = ip {
                         if !ipv6.is_loopback() {
-                            urls.push(format!("{}://[{}]:{}/", protocol, ipv6, args.port));
+                            let url = if ipv6.is_unicast_link_local() {
+                                format!("{}://[{}%{}]:{}/", protocol, ipv6, ifname, args.port)
+                            } else {
+                                format!("{}://[{}]:{}/", protocol, ipv6, args.port)
+                            };
+                            urls.push(url);
                         }
                     }
                 }
