@@ -56,6 +56,7 @@ async fn handle_request(
     use_tls: bool,
     list_dirs: bool,
     show_dotfiles: bool,
+    enable_csp: bool,
     ) -> Result<Response<Full<Bytes>>> {
     let span = tracing::span!(
         Level::INFO,
@@ -101,7 +102,7 @@ async fn handle_request(
         })
     }?;
     info!(status=%response.status(), full_path = %canonical_path.to_string_lossy());
-    add_security_headers(response, use_tls)
+    add_security_headers(response, use_tls, enable_csp)
 }
 
 #[tokio::main]
@@ -181,6 +182,7 @@ async fn main() -> Result<()> {
                         let password = password.clone();
                         let tls = tls_enabled;
                         let show_dotfiles = args.show_dotfiles;
+                        let enable_csp = args.enable_csp;
                         
                         move |req| {
                             let span = tracing::span!(
@@ -202,6 +204,7 @@ async fn main() -> Result<()> {
                                     tls,
                                     list_dirs,
                                     show_dotfiles,
+                                    enable_csp,
                                 ).await {
                                     Ok(response) => Ok(response),
                                     Err(e) => {

@@ -54,6 +54,10 @@ pub struct Args {
     /// Show dotfiles (hidden by default)
     #[arg(long, default_value_t = false)]
     pub show_dotfiles: bool,
+
+    /// Enable Content Security Policy headers (disabled by default)
+    #[arg(long, default_value_t = false)]
+    pub enable_csp: bool,
 }
 
 pub struct Config {

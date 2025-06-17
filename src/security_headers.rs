@@ -5,6 +5,7 @@ use crate::error::{AppError, Result};
 pub fn add_security_headers(
     response: Response<Full<Bytes>>, 
     use_tls: bool,
+    enable_csp: bool,
 ) -> Result<Response<Full<Bytes>>> {
     let is_error = response.status().is_client_error() || response.status().is_server_error();
     let (mut parts, body) = response.into_parts();
@@ -22,11 +23,13 @@ pub fn add_security_headers(
         );
     }
 
-    // Set CSP
-    parts.headers.insert(
-        "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:".parse().map_err(AppError::from)?
-    );
+    // Set CSP if enabled
+    if enable_csp {
+        parts.headers.insert(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:".parse().map_err(AppError::from)?
+        );
+    }
 
     // Set cache control based on status
     if is_error {
