@@ -61,6 +61,12 @@ servive --no-list-dirs
 servive --enable-csp
 ```
 
+### Enable HSTS (requires TLS)
+
+```sh
+servive --tls --enable-hsts
+```
+
 ### With specific bind address
 
 IPv4:
@@ -89,6 +95,7 @@ servive -b ::1
 | `-b`, `--bind`      | Bind address (IPv4 or IPv6)                     | 127.0.0.1       |
 | `--show-dotfiles`   | Show dotfiles (hidden by default)               | false           |
 | `--enable-csp`      | Enable Content Security Policy headers          | false           |
+| `--enable-hsts`     | Enable HTTP Strict Transport Security headers   | false           |
 
 ## Security Considerations
 
@@ -100,6 +107,7 @@ servive -b ::1
   - X-Frame-Options
   - X-XSS-Protection
 - Content-Security-Policy is optional (enabled with --enable-csp)
+- HSTS (HTTP Strict Transport Security) is now opt-in (enabled with --enable-hsts when using TLS)
 
 ## Building from Source
 

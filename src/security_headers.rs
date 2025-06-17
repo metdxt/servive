@@ -6,6 +6,7 @@ pub fn add_security_headers(
     response: Response<Full<Bytes>>, 
     use_tls: bool,
     enable_csp: bool,
+    enable_hsts: bool,
 ) -> Result<Response<Full<Bytes>>> {
     let is_error = response.status().is_client_error() || response.status().is_server_error();
     let (mut parts, body) = response.into_parts();
@@ -15,8 +16,8 @@ pub fn add_security_headers(
     parts.headers.insert("X-Frame-Options", "DENY".parse().map_err(AppError::from)?);
     parts.headers.insert("X-XSS-Protection", "1; mode=block".parse().map_err(AppError::from)?);
 
-    // Set HSTS if using TLS
-    if use_tls {
+    // Set HSTS if using TLS and enabled
+    if use_tls && enable_hsts {
         parts.headers.insert(
             "Strict-Transport-Security", 
             "max-age=63072000; includeSubDomains; preload".parse().map_err(AppError::from)?

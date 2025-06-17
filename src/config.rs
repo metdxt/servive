@@ -58,6 +58,10 @@ pub struct Args {
     /// Enable Content Security Policy headers (disabled by default)
     #[arg(long, default_value_t = false)]
     pub enable_csp: bool,
+
+    /// Enable HSTS headers (disabled by default)
+    #[arg(long, default_value_t = false)]
+    pub enable_hsts: bool,
 }
 
 pub struct Config {
