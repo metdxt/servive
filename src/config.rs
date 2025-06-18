@@ -62,6 +62,10 @@ pub struct Args {
     /// Enable HSTS headers (disabled by default)
     #[arg(long, default_value_t = false)]
     pub enable_hsts: bool,
+
+    /// Maximum file size in bytes (0 for unlimited - default)
+    #[arg(long, value_name = "BYTES")]
+    pub max_file_size: Option<u64>,
 }
 
 pub struct Config {

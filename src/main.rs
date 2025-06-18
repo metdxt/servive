@@ -1,6 +1,5 @@
 // Internal modules
 mod auth;
-mod common;
 mod config;
 mod directory_listing;
 mod error;
@@ -58,6 +57,7 @@ async fn handle_request(
     show_dotfiles: bool,
     enable_csp: bool,
     enable_hsts: bool,
+    max_file_size: Option<u64>,
     ) -> Result<Response<Full<Bytes>>> {
     let span = tracing::span!(
         Level::INFO,
@@ -96,7 +96,7 @@ async fn handle_request(
     
     let response = match fs::metadata(&canonical_path) {
         Ok(metadata) if metadata.is_dir() => list_directory(&canonical_path, &base_dir, list_dirs, show_dotfiles),
-        Ok(_) => serve_file(&canonical_path, show_dotfiles),
+        Ok(_) => serve_file(&canonical_path, show_dotfiles, max_file_size),
         Err(e) => Err(AppError::NotFound {
             path: canonical_path.clone(),
             source: e
@@ -206,8 +206,9 @@ async fn main() -> Result<()> {
                                     tls,
                                     list_dirs,
                                     show_dotfiles,
-                                    enable_csp,
-                                    enable_hsts,
+                            enable_csp,
+                            enable_hsts,
+                            args.max_file_size,
                                 ).await {
                                     Ok(response) => Ok(response),
                                     Err(e) => {

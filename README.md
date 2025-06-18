@@ -96,6 +96,15 @@ servive -b ::1
 | `--show-dotfiles`   | Show dotfiles (hidden by default)               | false           |
 | `--enable-csp`      | Enable Content Security Policy headers          | false           |
 | `--enable-hsts`     | Enable HTTP Strict Transport Security headers   | false           |
+| `--max-file-size`   | Maximum file size in bytes (0 for unlimited)    | unlimited       |
+
+## File Size Limits
+
+If you wish to limit file size served to clients you can:
+- Set a custom limit with `--max-file-size BYTES`
+- Allow unlimited file sizes with `--max-file-size 0` (this is default)
+
+If limit is set servive will return `403 Forbidden` if requested file is larger than the limit.
 
 ## Security Considerations
 
