@@ -62,6 +62,11 @@ pub enum AppError {
     InvalidHeader {
         #[from] source: InvalidHeaderValue,
     },
+
+    #[error("Invalid size format: {input} (expected format like '10MB', '1GB')")]
+    InvalidSizeFormat {
+        input: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;

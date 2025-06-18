@@ -764,6 +764,7 @@ dependencies = [
  "mime",
  "mime_guess",
  "percent-encoding",
+ "regex",
  "rustls",
  "rustls-pki-types",
  "subtle",

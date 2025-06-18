@@ -1,6 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use crate::error::{AppError, Result};
+use crate::size_parsing::HumanSize;
 
 #[derive(Parser, Debug)]
 #[command(version = concat!(
@@ -63,9 +64,9 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub enable_hsts: bool,
 
-    /// Maximum file size in bytes (0 for unlimited - default)
-    #[arg(long, value_name = "BYTES")]
-    pub max_file_size: Option<u64>,
+    /// Maximum file size (supports human-readable values like 10MB, 1GB)
+    #[arg(long, value_name = "SIZE")]
+    pub max_file_size: Option<HumanSize>,
 }
 
 pub struct Config {

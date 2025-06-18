@@ -8,6 +8,7 @@ mod networking;
 mod path_validation;
 mod responses;
 mod security_headers;
+mod size_parsing;
 mod tls;
 
 // Standard library imports
@@ -57,7 +58,7 @@ async fn handle_request(
     show_dotfiles: bool,
     enable_csp: bool,
     enable_hsts: bool,
-    max_file_size: Option<u64>,
+    max_file_size: Option<crate::size_parsing::HumanSize>,
     ) -> Result<Response<Full<Bytes>>> {
     let span = tracing::span!(
         Level::INFO,
@@ -96,7 +97,7 @@ async fn handle_request(
     
     let response = match fs::metadata(&canonical_path) {
         Ok(metadata) if metadata.is_dir() => list_directory(&canonical_path, &base_dir, list_dirs, show_dotfiles),
-        Ok(_) => serve_file(&canonical_path, show_dotfiles, max_file_size),
+        Ok(_) => serve_file(&canonical_path, show_dotfiles, max_file_size.map(|h| h.0)),
         Err(e) => Err(AppError::NotFound {
             path: canonical_path.clone(),
             source: e
